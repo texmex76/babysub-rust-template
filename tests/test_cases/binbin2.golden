@@ -1,0 +1,9 @@
+c BabySub Subsumption Preprocessor
+c reading from 'test/binbin2.golden'
+c parsed 'p cnf 2 2' header
+c hash-signature 13752085431583871717
+p cnf 2 2
+-1 2 0
+1 2 0
+c subsumed-clauses:             0    clauses 0%
+c process-time:                 0.00 seconds
