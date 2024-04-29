@@ -7,6 +7,9 @@ edition = "2021"
 
 [dependencies]
 clap = "*"
+xz2 = "*"
+flate2 = "*"
+bzip2 = "*"
 
 [dev-dependencies]
 assert_cmd = "*"
