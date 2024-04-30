@@ -1,13 +1,17 @@
 use bzip2;
+use bzip2::read::BzDecoder;
 use bzip2::write::BzEncoder;
 use clap::{Arg, ArgAction, Command};
 use flate2;
+use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::ops::{Index, IndexMut};
+use std::path::Path;
 use std::process;
 use std::time::Instant;
+use xz2::read::XzDecoder;
 use xz2::write::XzEncoder;
 
 macro_rules! die {
@@ -111,19 +115,26 @@ struct Stats {
 #[derive(Debug, Clone)]
 struct Clause {
     garbage: bool,
+    // The clause id is just the index in the formula's clauses vector
     literals: Vec<i32>,
 }
 
 struct Matrix {
     matrix: Vec<Vec<usize>>,
-    offset: usize,
 }
 
 impl Matrix {
     fn new() -> Self {
-        Matrix {
-            matrix: Vec::new(),
-            offset: 0,
+        Matrix { matrix: Vec::new() }
+    }
+
+    fn map_literal_to_index(&self, literal: i32) -> usize {
+        // Optimization for matrix indexing
+        // With this, lit and -lit will be next to each other
+        if literal < 0 {
+            (-literal * 2 - 2) as usize
+        } else {
+            (literal * 2 - 1) as usize
         }
     }
 
@@ -133,33 +144,32 @@ impl Matrix {
             "initializing matrix with {} variables",
             variables
         );
-        let size = 2 * variables + 1;
+        let size = 2 * variables;
         self.matrix = vec![vec![0; size]; size];
-        self.offset = variables;
     }
 }
 
 impl Index<i32> for Matrix {
     type Output = Vec<usize>;
 
-    fn index(&self, index: i32) -> &Self::Output {
-        let computed_index = self.offset as i32 + index;
+    fn index(&self, literal: i32) -> &Self::Output {
+        let computed_index = self.map_literal_to_index(literal);
         assert!(
-            computed_index >= 0 && computed_index < self.matrix.len() as i32,
+            computed_index < self.matrix.len(),
             "Matrix index out of bounds"
         );
-        &self.matrix[computed_index as usize]
+        &self.matrix[computed_index]
     }
 }
 
 impl IndexMut<i32> for Matrix {
-    fn index_mut(&mut self, index: i32) -> &mut Self::Output {
-        let computed_index = self.offset as i32 + index;
+    fn index_mut(&mut self, literal: i32) -> &mut Self::Output {
+        let computed_index = self.map_literal_to_index(literal);
         assert!(
-            computed_index >= 0 && computed_index < self.matrix.len() as i32,
+            computed_index < self.matrix.len(),
             "Matrix index out of bounds"
         );
-        &mut self.matrix[computed_index as usize]
+        &mut self.matrix[computed_index]
     }
 }
 
@@ -299,12 +309,26 @@ fn compute_signature(ctx: &mut SATContext) -> u64 {
 }
 
 fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
+    let path = Path::new(&input_path);
     let input: Box<dyn Read> = if input_path == "<stdin>" {
         message!(ctx.config.verbosity, "reading from '<stdin>'");
         Box::new(io::stdin())
     } else {
         message!(ctx.config.verbosity, "reading from '{}'", input_path);
-        Box::new(File::open(&input_path)?)
+        let file = File::open(&input_path)?;
+        if path.extension().unwrap() == "bz2" {
+            LOG!(ctx.config.verbosity, "reading BZ2 compressed file");
+            Box::new(BzDecoder::new(file))
+        } else if path.extension().unwrap() == "gz" {
+            LOG!(ctx.config.verbosity, "reading GZ compressed file");
+            Box::new(GzDecoder::new(file))
+        } else if path.extension().unwrap() == "xz" {
+            LOG!(ctx.config.verbosity, "reading XZ compressed file");
+            Box::new(XzDecoder::new(file))
+        } else {
+            LOG!(ctx.config.verbosity, "reading uncompressed file");
+            Box::new(file)
+        }
     };
 
     let reader = BufReader::new(input);
@@ -444,7 +468,7 @@ fn simplify(ctx: &mut SATContext) {
     ctx.formula.collect_garbage_clauses(ctx.config.verbosity);
 }
 
-fn main() {
+fn parse_arguments() -> Config {
     let app = Command::new("BabySub")
         .version("1.0")
         .author("Bernhard Gstrein")
@@ -512,16 +536,24 @@ fn main() {
         die!("Cannot enable both forward and backward subsumption");
     }
 
-    let config = Config {
+    Config {
         input_path: matches.value_of("input").unwrap_or("<stdin>").to_string(),
         output_path: matches.value_of("output").unwrap_or("<stdout>").to_string(),
         verbosity,
         forward_mode: matches.is_present("forward-mode"),
         sign: matches.is_present("sign"),
-    };
+    }
+}
 
-    let mut ctx = SATContext::new(config);
+fn setup_context(config: Config) -> SATContext {
+    let ctx = SATContext::new(config);
     message!(ctx.config.verbosity, "BabySub Subsumption Preprocessor");
+    ctx
+}
+
+fn main() {
+    let config = parse_arguments();
+    let mut ctx = setup_context(config);
 
     if let Err(e) = parse_cnf(ctx.config.input_path.clone(), &mut ctx) {
         die!("Failed to parse CNF: {}", e);
