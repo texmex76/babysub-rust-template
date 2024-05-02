@@ -145,7 +145,7 @@ impl Matrix {
             variables
         );
         let size = 2 * variables;
-        self.matrix = vec![vec![0; size]; size];
+        self.matrix = vec![Vec::new(); size];
     }
 }
 
